@@ -104,6 +104,7 @@ DesktopWindow::DesktopWindow(int screenNum):
     connect(proxyModel_, &Fm::ProxyFolderModel::rowsAboutToBeRemoved, this, &DesktopWindow::onRowsAboutToBeRemoved);
     connect(proxyModel_, &Fm::ProxyFolderModel::layoutChanged, this, &DesktopWindow::onLayoutChanged);
     connect(proxyModel_, &Fm::ProxyFolderModel::sortFilterChanged, this, &DesktopWindow::onModelSortFilterChanged);
+    connect(proxyModel_, &Fm::ProxyFolderModel::dataChanged, this, &DesktopWindow::onDataChanged);
     connect(listView_, &QListView::indexesMoved, this, &DesktopWindow::onIndexesMoved);
   }
 
@@ -435,6 +436,33 @@ void DesktopWindow::onModelSortFilterChanged() {
   settings.setSesktopSortFolderFirst(proxyModel_->folderFirst());
 }
 
+void DesktopWindow::onDataChanged(const QModelIndex& topLeft, const QModelIndex& bottomRight) {
+  /****************************************************************************
+   NOTE: The display names of desktop entries and shortcuts may change without
+   their files being renamed and, on such occasions, a relayout will be needed.
+   Since there is no signal for that, we use the signal dataChanged() and the
+   QHash displayNames_, which remembers such display names with every relayout.
+   ****************************************************************************/
+  if(topLeft.column() == 0) {
+    bool relayout(false);
+    for(int i = topLeft.row(); i <= bottomRight.row(); ++i) {
+      QModelIndex index = topLeft.sibling(i, 0);
+      if(index.isValid() && displayNames_.contains(index)) {
+        FmFileInfo* file = proxyModel_->fileInfoFromIndex(index);
+        if(displayNames_[index] != fm_file_info_get_disp_name(file)) {
+          relayout = true;
+          break;
+        }
+      }
+    }
+    if(relayout) {
+      queueRelayout();
+      // parts of the old display name might still be visible if it's long
+      listView_->viewport()->update();
+    }
+  }
+}
+
 void DesktopWindow::onIndexesMoved(const QModelIndexList& indexes) {
   // remember the custom position for the items
   Q_FOREACH(const QModelIndex& index, indexes) {
@@ -508,6 +536,7 @@ void DesktopWindow::removeBottomGap() {
 // QListView does item layout in a very inflexible way, so let's do our custom layout again.
 // FIXME: this is very inefficient, but due to the design flaw of QListView, this is currently the only workaround.
 void DesktopWindow::relayoutItems() {
+  displayNames_.clear();
   loadItemPositions(); // something may have changed
   // qDebug("relayoutItems()");
   if(relayoutTimer_) {
@@ -537,6 +566,9 @@ void DesktopWindow::relayoutItems() {
       QModelIndex index = proxyModel_->index(row, 0);
       int itemWidth = delegate_->sizeHint(listView_->getViewOptions(), index).width();
       FmFileInfo* file = proxyModel_->fileInfoFromIndex(index);
+      // remember display names of desktop entries and shortcuts
+      if(fm_file_info_is_desktop_entry(file) || fm_file_info_is_shortcut(file))
+        displayNames_[index] = QString(fm_file_info_get_disp_name(file));
       QByteArray name = fm_file_info_get_name(file);
       QHash<QByteArray, QPoint>::iterator it = customItemPos_.find(name);
       if(it != customItemPos_.end()) { // the item has a custom position
